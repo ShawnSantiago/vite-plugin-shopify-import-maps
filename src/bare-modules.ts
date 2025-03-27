@@ -5,65 +5,65 @@ import { parse } from 'es-module-lexer'
 import MagicString from 'magic-string'
 
 /**
- * Use bare specifier in import module statements defined in bareModules option groups.
+ * Use bare specifier in import module statements defined in bareModules option groups or files.
  */
-export default function bareModules (options: PluginOptions): Plugin {
+export default function bareModules(options: PluginOptions): Plugin {
   const moduleSpecifierMap = new Map<string, string>()
 
   return {
     name: 'vite-plugin-shopify-import-maps:bare-modules',
     api: {
-      get moduleSpecifierMap () {
+      get moduleSpecifierMap() {
         return moduleSpecifierMap
       }
     },
-    renderChunk (_, chunk) {
-      const bareModules = options.bareModules as BareModules
-      const groups = bareModules.groups
+    renderChunk(_, chunk) {
+      const bareModules = options.bareModules as BareModules & { files?: Record<string, string> }
+      const groups = bareModules.groups || {}
+      const files = bareModules.files || {}
       const moduleId = chunk.facadeModuleId ?? chunk.moduleIds.at(-1)
 
       let specifierKey: string | undefined
 
-      if (moduleId !== undefined) {
+      // Handle exact file mappings
+      for (const [specifier, filename] of Object.entries(files)) {
+        if (chunk.fileName === path.basename(filename)) {
+          specifierKey = specifier
+          break
+        }
+      }
+
+      // Fallback to group matching
+      if (!specifierKey && moduleId !== undefined) {
         for (const group in groups) {
           const value = groups[group]
 
-          if (typeof specifierKey === 'string') {
-            continue
-          }
-
           if (Array.isArray(value)) {
-            const arrayTestPassed = value.some((element) => {
-              return (
-                (element instanceof RegExp && element.test(moduleId)) ||
-                  (typeof element === 'string' && moduleId.includes(element))
-              )
-            })
-
-            if (arrayTestPassed) {
+            const match = value.some(v =>
+              v instanceof RegExp ? v.test(moduleId) : moduleId.includes(v)
+            )
+            if (match) {
               specifierKey = buildSpecifierKey(chunk.name, group)
               break
             }
-          } else {
-            const regexpTestPassed = value instanceof RegExp && value.test(moduleId)
-            const stringTestPassed = typeof value === 'string' && moduleId.includes(value)
-
-            if (regexpTestPassed || stringTestPassed) {
-              specifierKey = buildSpecifierKey(chunk.name, group)
-              break
-            }
+          } else if (
+            (typeof value === 'string' && moduleId.includes(value)) ||
+            (value instanceof RegExp && value.test(moduleId))
+          ) {
+            specifierKey = buildSpecifierKey(chunk.name, group)
+            break
           }
         }
       }
 
-      if (specifierKey === undefined) {
+      if (!specifierKey) {
         specifierKey = buildSpecifierKey(chunk.name, bareModules.defaultGroup)
       }
 
       moduleSpecifierMap.set(chunk.fileName, specifierKey)
     },
-    generateBundle (options, bundle) {
-      Object.keys(bundle).forEach((fileName) => {
+    generateBundle(options, bundle) {
+      for (const fileName of Object.keys(bundle)) {
         const chunk = bundle[fileName]
 
         if (chunk.type === 'chunk') {
@@ -74,14 +74,12 @@ export default function bareModules (options: PluginOptions): Plugin {
             const name = path.parse(n ?? '').base
             const specifier = moduleSpecifierMap.get(name)
 
-            if (specifier !== undefined) {
+            if (specifier) {
               // Keep quotes for dynamic import.
-              // https://github.com/guybedford/es-module-lexer/issues/144
               if (d > -1) {
                 s += 1
                 e -= 1
               }
-
               code.overwrite(s, e, specifier)
             }
           }
@@ -94,11 +92,11 @@ export default function bareModules (options: PluginOptions): Plugin {
             }
           }
         }
-      })
+      }
     }
   }
 }
 
-function buildSpecifierKey (name: string, group: string): string {
-  return group + '/' + name
+function buildSpecifierKey(name: string, group: string): string {
+  return `${group}/${name}`
 }
